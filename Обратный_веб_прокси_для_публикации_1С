@@ -1,0 +1,98 @@
+Инструкция по настройки ваб прокси для организации отказоустойчивого доступа к публикации 1С в локальной сети.
+
+--------ВВОДНЫЕ ДАННЫЕ------------
+Итак, имеем 1С сервер+Apache на linux в виртуальной машине в нашей локальной сети (192.168.4.203).
+Публикации в Apache настроены как по http так и по https
+Нам необходимо сделать так чтобы опубликованная база 1С была всегда доступна извне независимо от того через какого провайдера сервер 1с выходит в интернет и какой белый айпи адрес при этом используется.
+В маршрутизаторе ЛВС настроены пробросы портов до апача через белыйе айпи от разных првайдеров
+http://213.138.77.28:8912
+https://213.138.77.28:8913
+
+http://193.232.211.54:8912
+https://193.232.211.54:8913
+  
+ При настройке прокси для https важно понимать, что проксирование будет происходить всё равно на http т.е
+ веб прокси по адресу onec.h2opark.ru:443 будет перенаправлять запросы на xxx.xxx.xxx.xxx:80.
+ Шифрование будет работать между вебпрокси и клиентом
+ 
+--------ПРОЦЕДУРА НАСТРОЙКИ------------
+
+1) Создаём доменую запись, к примеру onec.h2opark.ru ведущий на айпи (149.154.67.71)виртуальной машиной с сервером apache который будет прокси сервером.
+
+2) Настраиваем веб прокси apache на виртуальной машине в облаке
+2.1) Устанавливаем необходимые модули
+a2enmod proxy
+a2enmod proxy_balancer
+a2enmod proxy_hcheck
+a2enmod proxy_http
+a2enmod ssl
+a2enmod rewrite
+
+service apache2 restart 
+
+2.2) Создаём и заполняем конфиг файл для виртуального хоста /etc/apache2/sites-available/onec.conf
+В файле конфига прописываем наши белые айпи адреса через которые настроены пробросы до сервера 1С
+BalancerMember 213.138.77.28
+BalancerMember 193.232.211.54
+балансировщик будет перенаправлять на эти адреса в зависимости от того какой из них доступен по TCP
+за это отвечают следующие параметры
+hcmethod=TCP hcinterval=15 hcpasses=3 hcfails=3
+hcinterval - интервал проверки доступности айпи в секундах
+hcpasses=3 - количество успешных проверок связи через которое ip будет считаться активным
+hcfails=3 - количество неудачных проверок связи через которое ip будет считаться недоступным
+#------------------ФАЙЛ onec.conf--------------------
+
+<VirtualHost *:80>
+ 
+ ServerAdmin webmaster@localhost
+ServerName onec.h2opark.ru
+      
+<Proxy balancer://mycluster>
+BalancerMember http://213.138.77.28:8912 hcmethod=TCP hcinterval=15 hcpasses=3 hcfails=3
+BalancerMember http://193.232.211.54:8912 hcmethod=TCP hcinterval=15 hcpasses=3 hcfails=3
+</Proxy>
+     
+ProxyPreserveHost On
+ProxyPass / balancer://mycluster/
+ProxyPassReverse / balancer://mycluster/
+
+ErrorLog ${APACHE_LOG_DIR}/onec_error.log
+CustomLog ${APACHE_LOG_DIR}/onec_access.log combined
+
+</VirtualHost>
+
+<VirtualHost *:443>
+SSLEngine On
+SSLProxyEngine On
+SSLProxyCheckPeerCN on
+SSLProxyCheckPeerExpire on
+
+ServerName onec.h2opark.ru
+
+SSLCertificateFile "/etc/ssl/certs/onec.pem"
+SSLCertificateKeyFile "/etc/ssl/private/onec.key"
+
+<Proxy balancer://mycluster>
+BalancerMember http://213.138.77.28:8912 hcmethod=TCP hcinterval=15 hcpasses=3 hcfails=3
+BalancerMember http://193.232.211.54:8912 hcmethod=TCP hcinterval=15 hcpasses=3 hcfails=3
+</Proxy>
+ProxyPreserveHost On
+ProxyPass / balancer://mycluster/
+ProxyPassReverse / balancer://mycluster/
+
+ErrorLog ${APACHE_LOG_DIR}/onec_error.log
+CustomLog ${APACHE_LOG_DIR}/onec_access.log combined
+
+</VirtualHost>
+
+#------------------Конец файла onec.conf--------------------
+
+2.3) Загружаем на прокси сервер сертификаты взятые с сервера 1С и кладём их по адресам
+"/etc/ssl/certs/onec.pem"
+"/etc/ssl/private/onec.key"
+И не забываем про права доступа к этим файлам, чтобы apache мог их прочитать
+
+
+2.4) Включаем виртуальных хост и перезапускаем апач
+a2ensite onec.conf
+service apache2 restart 
